@@ -86,7 +86,7 @@ def set_etherscan(*args, **kwargs):
 
 
 def reset_env():
-    set_env(Env())
+    _set_env(Env())
 
 
 def _breakpoint(computation):
