@@ -1,11 +1,11 @@
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from functools import cached_property
 from typing import Any, Optional, Union
 from warnings import warn
 
 from eth.abc import ComputationAPI
 from vyper.semantics.analysis.base import FunctionVisibility, StateMutability
-from vyper.utils import method_id
+from vyper.utils import keccak256, method_id
 
 from boa.contracts.base_evm_contract import (
     BoaError,
@@ -14,6 +14,7 @@ from boa.contracts.base_evm_contract import (
     _handle_child_trace,
 )
 from boa.contracts.call_trace import TraceSource
+from boa.contracts.event_decoder import decode_log
 from boa.util.abi import ABIError, Address, abi_decode, abi_encode, is_abi_encodable
 
 
@@ -47,7 +48,7 @@ class ABIFunction:
 
     @property
     def signature(self) -> str:
-        return f"({_format_abi_type(self.argument_types)})"
+        return _format_abi_type(self.argument_types)
 
     @cached_property
     def return_type(self) -> list:
@@ -119,7 +120,7 @@ class ABIFunction:
             error = f"Missing keyword argument {e} for `{self.signature}`. Passed {args} {kwargs}"
             raise TypeError(error)
 
-    def __call__(self, *args, value=0, gas=None, sender=None, **kwargs):
+    def __call__(self, *args, value=0, gas=None, sender=None, simulate=False, **kwargs):
         """Calls the function with the given arguments based on the ABI contract."""
         if not self.contract or not self.contract.env:
             raise Exception(f"Cannot call {self} without deploying contract.")
@@ -131,16 +132,29 @@ class ABIFunction:
             value=value,
             gas=gas,
             is_modifying=self.is_mutable,
+            simulate=simulate,
             contract=self.contract,
         )
 
-        match self.contract.marshal_to_python(computation, self.return_type):
+        val = self.contract.marshal_to_python(computation, self.return_type)
+
+        # this property should be guaranteed by abi_decode inside marshal_to_python,
+        # assert it again just for clarity
+        # note that val should be a tuple.
+        assert len(self._abi["outputs"]) == len(val)
+
+        match val:
             case ():
                 return None
             case (single,):
-                return single
+                return _parse_complex(self._abi["outputs"][0], single, name=self.name)
             case multiple:
-                return tuple(multiple)
+                item_abis = self._abi["outputs"]
+                cls = type(multiple)  # should be tuple
+                return cls(
+                    _parse_complex(abi, item, name=self.name)
+                    for (abi, item) in zip(item_abis, multiple)
+                )
 
 
 class ABIOverload:
@@ -185,6 +199,7 @@ class ABIOverload:
         value=0,
         gas=None,
         sender=None,
+        simulate=False,
         disambiguate_signature=None,
         **kwargs,
     ):
@@ -195,7 +210,9 @@ class ABIOverload:
         function = self._pick_overload(
             *args, disambiguate_signature=disambiguate_signature, **kwargs
         )
-        return function(*args, value=value, gas=gas, sender=sender, **kwargs)
+        return function(
+            *args, value=value, gas=gas, sender=sender, simulate=simulate, **kwargs
+        )
 
     def _pick_overload(
         self, *args, disambiguate_signature=None, **kwargs
@@ -234,16 +251,19 @@ class ABIContract(_BaseEVMContract):
         name: str,
         abi: list[dict],
         functions: list[ABIFunction],
+        events: list[dict],
         address: Address,
         filename: Optional[str] = None,
         env=None,
+        nowarn=False,
     ):
         super().__init__(name, env, filename=filename, address=address)
         self._abi = abi
         self._functions = functions
+        self._events = events
 
         self._bytecode = self.env.get_code(address)
-        if not self._bytecode:
+        if not self._bytecode and not nowarn:
             warn(
                 f"Requested {self} but there is no bytecode at that address!",
                 stacklevel=2,
@@ -276,6 +296,28 @@ class ABIContract(_BaseEVMContract):
             if not function.is_constructor
         }
 
+    @cached_property
+    def event_for(self):
+        # [{"name": "Bar", "inputs":
+        #   [{"name": "x", "type": "uint256", "indexed": false},
+        #   {"name": "y", "type": "tuple", "components":
+        #     [{"name": "x", "type": "uint256"}], "indexed": false}],
+        # "anonymous": false, "type": "event"},
+        # }]
+        ret = {}
+        for event_abi in self._events:
+            event_signature = ",".join(
+                _abi_from_json(item) for item in event_abi["inputs"]
+            )
+            event_name = event_abi["name"]
+            event_signature = f"{event_name}({event_signature})"
+            event_id = int(keccak256(event_signature.encode()).hex(), 16)
+            ret[event_id] = event_abi
+        return ret
+
+    def decode_log(self, log_entry):
+        return decode_log(self._address, self.event_for, log_entry)
+
     def marshal_to_python(self, computation, abi_type: list[str]) -> tuple[Any, ...]:
         """
         Convert the output of a contract call to a Python object.
@@ -286,7 +328,7 @@ class ABIContract(_BaseEVMContract):
         if computation.is_error:
             return self.handle_error(computation)
 
-        schema = f"({_format_abi_type(abi_type)})"
+        schema = _format_abi_type(abi_type)
         try:
             return abi_decode(schema, computation.output)
         except ABIError as e:
@@ -360,17 +402,27 @@ class ABIContractFactory:
             if item.get("type") == "function"
         ]
 
+    @property
+    def events(self):
+        return [item for item in self.abi if item.get("type") == "event"]
+
     @classmethod
     def from_abi_dict(cls, abi, name="<anonymous contract>", filename=None):
         return cls(name, abi, filename)
 
-    def at(self, address: Address | str) -> ABIContract:
+    def at(self, address: Address | str, nowarn=False) -> ABIContract:
         """
         Create an ABI contract object for a deployed contract at `address`.
         """
         address = Address(address)
         contract = ABIContract(
-            self._name, self._abi, self.functions, address, self.filename
+            self._name,
+            self._abi,
+            self.functions,
+            self.events,
+            address,
+            self.filename,
+            nowarn=nowarn,
         )
 
         contract.env.register_contract(address, contract)
@@ -390,7 +442,7 @@ class ABITraceSource(TraceSource):
 
     @cached_property
     def args_abi_type(self):
-        return f"({_format_abi_type(self.function.argument_types)})"
+        return _format_abi_type(self.function.argument_types)
 
     @cached_property
     def _argument_names(self) -> list[str]:
@@ -398,7 +450,7 @@ class ABITraceSource(TraceSource):
 
     @cached_property
     def return_abi_type(self):
-        return f"({_format_abi_type(self.function.return_type)})"
+        return _format_abi_type(self.function.return_type)
 
 
 def _abi_from_json(abi: dict) -> str:
@@ -407,6 +459,12 @@ def _abi_from_json(abi: dict) -> str:
     :param abi: The ABI type to parse.
     :return: The schema string for the given abi type.
     """
+    # {"stateMutability": "view", "type": "function", "name": "foo",
+    # "inputs": [],
+    # "outputs": [{"name": "", "type": "tuple",
+    #    "components": [{"name": "x", "type": "uint256"}]}]
+    # }
+
     if "components" in abi:
         components = ",".join([_abi_from_json(item) for item in abi["components"]])
         if abi["type"].startswith("tuple"):
@@ -416,11 +474,51 @@ def _abi_from_json(abi: dict) -> str:
     return abi["type"]
 
 
+def _parse_complex(abi: dict, value: Any, name=None) -> str:
+    """
+    Parses an ABI type into its schema string.
+    :param abi: The ABI type to parse.
+    :return: The schema string for the given abi type.
+    """
+    # simple case
+    if "components" not in abi:
+        return value
+
+    # https://docs.soliditylang.org/en/latest/abi-spec.html#handling-tuple-types
+    type_ = abi["type"]
+    assert type_.startswith("tuple")
+    # number of nested arrays (we don't care if dynamic or static)
+    depth = type_.count("[")
+
+    # complex case
+    # construct a namedtuple type on the fly
+    components = abi["components"]
+    typname = name or abi["name"] or "user_struct"
+    component_names = [item["name"] for item in components]
+
+    typ = namedtuple(typname, component_names, rename=True)  # type: ignore[misc]
+
+    def _leaf(tuple_vals):
+        components_parsed = [
+            _parse_complex(item_abi, item)
+            for (item_abi, item) in zip(components, tuple_vals)
+        ]
+
+        return typ(*components_parsed)
+
+    def _go(val, depth):
+        if depth == 0:
+            return _leaf(val)
+        return [_go(val, depth - 1) for val in val]
+
+    return _go(value, depth)
+
+
 def _format_abi_type(types: list) -> str:
     """
     Converts a list of ABI types into a comma-separated string.
     """
-    return ",".join(
-        item if isinstance(item, str) else f"({_format_abi_type(item)})"
-        for item in types
+    ret = ",".join(
+        item if isinstance(item, str) else _format_abi_type(item) for item in types
     )
+    return f"({ret})"

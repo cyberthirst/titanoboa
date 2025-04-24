@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 from eth.abc import ComputationAPI
 
 from boa.contracts.call_trace import TraceFrame
+from boa.contracts.event_decoder import RawLogEntry
 from boa.environment import Env
 from boa.util.abi import Address
 from boa.util.exceptions import strip_internal_frames
@@ -56,6 +57,48 @@ class _BaseEVMContract:
             # avoid assert, in pytest it would call repr(self) which segfaults
             raise RuntimeError("Contract address is not set")
         return self._address
+
+    # ## handling events
+    def _get_logs(self, computation, include_child_logs):
+        if computation is None:
+            return []
+
+        if include_child_logs:
+            return list(computation.get_raw_log_entries())
+
+        return computation._log_entries
+
+    def get_logs(
+        self, computation=None, include_child_logs=True, strict=True
+    ) -> list["RawLogEntry | NamedTuple"]:
+        if computation is None:
+            computation = self._computation
+
+        entries = self._get_logs(computation, include_child_logs)
+
+        # py-evm log format is (log_id, topics, data)
+        # sort on log_id
+        entries = sorted(entries)
+
+        ret: list["RawLogEntry | NamedTuple"] = []
+        for e in entries:
+            log_entry = RawLogEntry(*e)
+            logger_address = log_entry.address
+            c = self.env.lookup_contract(logger_address)
+            decoded_log = None
+            if c is not None:
+                try:
+                    decoded_log = c.decode_log(log_entry)
+                except Exception as exc:
+                    if strict:
+                        raise exc
+
+            if decoded_log is None:  # decoding unsuccessful
+                ret.append(log_entry)
+            else:
+                ret.append(decoded_log)
+
+        return ret
 
 
 class StackTrace(list):  # list[str|ErrorDetail]

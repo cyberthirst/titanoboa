@@ -68,6 +68,11 @@ class TransactionSettings:
     # amount of time to wait, in seconds before giving up on a transaction
     poll_timeout: float = 240.0
 
+    # The block identifier to use in the call to `eth_estimateGas` for a
+    # transaction. Defaults to "pending". Set to `None` to avoid adding
+    # the block param at all.
+    estimate_gas_block_identifier = "pending"
+
 
 @dataclass
 class ExternalAccount:
@@ -278,6 +283,7 @@ class NetworkEnv(Env):
         override_bytecode=None,
         contract=None,
         is_modifying=True,
+        simulate=False,
         ir_executor=None,  # maybe just have **kwargs to collect extra kwargs
     ):
         if is_modifying:
@@ -294,6 +300,7 @@ class NetworkEnv(Env):
             value=value,
             data=data,
             is_modifying=is_modifying,
+            simulate=simulate,
             contract=contract,
         )
 
@@ -301,7 +308,8 @@ class NetworkEnv(Env):
 
         hexdata = to_hex(data)
 
-        if is_modifying:
+        eth_call = simulate or not is_modifying
+        if not eth_call:
             try:
                 txdata, receipt, trace = self._send_txn(
                     from_=sender, to=to_address, value=value, gas=gas, data=hexdata
@@ -403,7 +411,9 @@ class NetworkEnv(Env):
 
         if (deployments_db := get_deployments_db()) is not None:
             contract_name = getattr(contract, "contract_name", None)
-            filename = getattr(contract, "filename", None)
+            if (filename := getattr(contract, "filename", None)) is not None:
+                filename = str(filename)
+
             try:
                 source_bundle = get_verification_bundle(contract)
             except Exception as e:
@@ -501,12 +511,7 @@ class NetworkEnv(Env):
     def _reset_fork(self, block_identifier="latest"):
         # use "latest" to make sure we are forking with up-to-date state
         # but use reset_traces=False to help with storage dumps
-        self.fork_rpc(
-            self._rpc,
-            reset_traces=False,
-            block_identifier=block_identifier,
-            cache_file=None,
-        )
+        self.fork_rpc(self._rpc, reset_traces=False, block_identifier=block_identifier)
 
     def _send_txn(self, from_, to=None, gas=None, value=None, data=None):
         tx_data = fixup_dict(
@@ -533,9 +538,12 @@ class NetworkEnv(Env):
 
         if gas is None:
             try:
-                tx_data["gas"] = self._rpc.fetch(
-                    "eth_estimateGas", [tx_data, "pending"]
-                )
+                if self.tx_settings.estimate_gas_block_identifier is None:
+                    params = [tx_data]
+                else:
+                    params = [tx_data, self.tx_settings.estimate_gas_block_identifier]
+                tx_data["gas"] = self._rpc.fetch("eth_estimateGas", params)
+
             except RPCError as e:
                 if e.code == 3:
                     # execution failed at estimateGas, probably the txn reverted

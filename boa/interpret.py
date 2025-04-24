@@ -1,13 +1,15 @@
+import contextlib
 import sys
 import textwrap
 from importlib.abc import MetaPathFinder
 from importlib.machinery import SourceFileLoader
 from importlib.util import spec_from_loader
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import vvm
 import vyper
+import vyper.ir.compile_ir as compile_ir
 from packaging.version import Version
 from vvm.utils.versioning import _pick_vyper_version, detect_version_specifier_set
 from vyper.ast.parse import parse_to_ast
@@ -20,6 +22,7 @@ from vyper.compiler.input_bundle import (
 )
 from vyper.compiler.phases import CompilerData
 from vyper.compiler.settings import Settings, anchor_settings
+from vyper.semantics.analysis.imports import resolve_imports
 from vyper.semantics.analysis.module import analyze_module
 from vyper.semantics.types.module import ModuleT
 from vyper.utils import sha256sum
@@ -166,12 +169,33 @@ def compiler_data(
         with anchor_settings(ret.settings):
             # force compilation to happen so DiskCache will cache the compiled artifact:
             _ = ret.bytecode, ret.bytecode_runtime
+
+            # workaround since CompilerData does not compute source_map
+            if not hasattr(ret, "source_map"):
+                # cache source map
+                ret.source_map = _compute_source_map(ret)
+
         return ret
 
     assert isinstance(deployer, type) or deployer is None
     deployer_id = repr(deployer)  # a unique str identifying the deployer class
     cache_key = str((contract_name, filename, fingerprint, kwargs, deployer_id))
-    return _disk_cache.caching_lookup(cache_key, get_compiler_data)
+
+    ret = _disk_cache.caching_lookup(cache_key, get_compiler_data)
+
+    if not hasattr(ret, "source_map"):
+        # invalidate so it will be cached on the next run
+        _disk_cache.invalidate(cache_key)
+
+        # compute source map so it's available downstream
+        ret.source_map = _compute_source_map(ret)
+
+    return ret
+
+
+def _compute_source_map(compiler_data: CompilerData) -> Any:
+    _, source_map = compile_ir.assembly_to_evm(compiler_data.assembly_runtime)
+    return source_map
 
 
 def load(filename: str | Path, *args, **kwargs) -> _Contract:  # type: ignore
@@ -190,9 +214,12 @@ def loads(
     name=None,
     filename=None,
     compiler_args=None,
+    no_vvm=False,
     **kwargs,
 ):
-    d = loads_partial(source_code, name, filename=filename, compiler_args=compiler_args)
+    d = loads_partial(
+        source_code, name, filename=filename, compiler_args=compiler_args, no_vvm=no_vvm
+    )
     if as_blueprint:
         return d.deploy_as_blueprint(contract_name=name, **kwargs)
     else:
@@ -222,10 +249,12 @@ def load_vyi(filename: str, name: str = None) -> ABIContractFactory:
 
 
 # load interface from .vyi file string contents.
+# NOTE: since vyi files can be compiled in 0.4.1, this codepath can probably
+# be refactored to use CompilerData (or straight loads_partial)
 def loads_vyi(source_code: str, name: str = None, filename: str = None):
     global _search_path
 
-    ast = parse_to_ast(source_code)
+    ast = parse_to_ast(source_code, is_interface=True)
 
     if name is None:
         name = "VyperContract.vyi"
@@ -233,7 +262,15 @@ def loads_vyi(source_code: str, name: str = None, filename: str = None):
     search_paths = get_search_paths(_search_path)
     input_bundle = FilesystemInputBundle(search_paths)
 
-    module_t = analyze_module(ast, input_bundle, is_interface=True)
+    # cf. CompilerData._resolve_imports
+    if filename is not None:
+        ctx = input_bundle.search_path(Path(filename).parent)
+    else:
+        ctx = contextlib.nullcontext()
+    with ctx:
+        _ = resolve_imports(ast, input_bundle)
+
+    module_t = analyze_module(ast)
     abi = module_t.interface.to_toplevel_abi_dict()
     return ABIContractFactory(name, abi, filename=filename)
 
@@ -244,6 +281,7 @@ def loads_partial(
     filename: str | Path | None = None,
     dedent: bool = True,
     compiler_args: dict = None,
+    no_vvm: bool = False,
 ) -> VyperDeployer:
     if filename is None:
         filename = "<unknown>"
@@ -251,13 +289,13 @@ def loads_partial(
     if dedent:
         source_code = textwrap.dedent(source_code)
 
-    specifier_set = detect_version_specifier_set(source_code)
-    # Use VVM only if the installed version is not in the specifier set
-    if specifier_set is not None and not specifier_set.contains(vyper.__version__):
-        version = _pick_vyper_version(specifier_set)
-        filename = str(filename)  # help mypy
-        # TODO: pass name to loads_partial_vvm, not filename
-        return _loads_partial_vvm(source_code, version, filename)
+    if not no_vvm:
+        specifier_set = detect_version_specifier_set(source_code)
+        # Use VVM only if the installed version is not in the specifier set
+        if specifier_set is not None and not specifier_set.contains(vyper.__version__):
+            version = _pick_vyper_version(specifier_set)
+            filename = str(filename)  # help mypy
+            return _loads_partial_vvm(source_code, version, name, filename)
 
     compiler_args = compiler_args or {}
 
@@ -273,25 +311,52 @@ def load_partial(filename: str, compiler_args=None):
         )
 
 
-def _loads_partial_vvm(source_code: str, version: Version, filename: str):
+def _loads_partial_vvm(
+    source_code: str,
+    version: Version,
+    name: Optional[str],
+    filename: str,
+    base_path=None,
+):
     global _disk_cache
+
+    if base_path is None:
+        base_path = Path(".")
 
     # install the requested version if not already installed
     vvm.install_vyper(version=version)
 
     def _compile():
-        compiled_src = vvm.compile_source(source_code, vyper_version=version)
+        return vvm.compile_source(
+            source_code, vyper_version=version, base_path=base_path
+        )
+
+    # separate _handle_output and _compile so that we don't trample
+    # name and filename in the VVMDeployer from separate invocations
+    # (with different values for name+filename).
+    def _handle_output(compiled_src):
         compiler_output = compiled_src["<stdin>"]
-        return VVMDeployer.from_compiler_output(compiler_output, filename=filename)
+        return VVMDeployer.from_compiler_output(
+            compiler_output, name=name, filename=filename
+        )
 
     # Ensure the cache is initialized
     if _disk_cache is None:
-        return _compile()
+        return _handle_output(_compile())
 
     # Generate a unique cache key
     cache_key = f"{source_code}:{version}"
+
     # Check the cache and return the result if available
-    return _disk_cache.caching_lookup(cache_key, _compile)
+    ret = _disk_cache.caching_lookup(cache_key, _compile)
+
+    # backwards compatibility: old versions of boa returned a VVMDeployer.
+    # here we detect the case and invalidate the cache so it can recompile.
+    if isinstance(ret, VVMDeployer):
+        _disk_cache.invalidate(cache_key)
+        ret = _disk_cache.caching_lookup(cache_key, _compile)
+
+    return _handle_output(ret)
 
 
 def from_etherscan(

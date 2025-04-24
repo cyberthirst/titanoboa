@@ -61,14 +61,24 @@ class Env:
         url: str,
         reset_traces=True,
         block_identifier="safe",
+        debug=False,
         deprecated=True,
         **kwargs,
     ):
         if deprecated:
             warnings.warn("using boa.env.fork directly is deprecated; use `boa.fork`!")
-        return self.fork_rpc(EthereumRPC(url), reset_traces, block_identifier, **kwargs)
+        return self.fork_rpc(
+            EthereumRPC(url), reset_traces, block_identifier, debug, **kwargs
+        )
 
-    def fork_rpc(self, rpc: RPC, reset_traces=True, block_identifier="safe", **kwargs):
+    def fork_rpc(
+        self,
+        rpc: RPC,
+        reset_traces=True,
+        block_identifier="safe",
+        debug=False,
+        **kwargs,
+    ):
         """
         Fork the environment to a local chain.
         :param rpc: RPC to fork from
@@ -82,7 +92,7 @@ class Env:
             self.sha3_trace = {}
             self.sstore_trace = {}
 
-        self.evm.fork_rpc(rpc, block_identifier, **kwargs)
+        self.evm.fork_rpc(rpc, block_identifier, debug=debug, **kwargs)
 
     def get_gas_meter_class(self):
         return self.evm.get_gas_meter_class()
@@ -156,8 +166,14 @@ class Env:
 
     # context manager which snapshots the state and reverts
     # to the snapshot on exiting the with statement
-    @contextlib.contextmanager
+    @property
     def anchor(self):
+        return self._anchor
+
+    # internal anchor function. useful for internals which don't want
+    # to call an overridden `anchor()` function.
+    @contextlib.contextmanager
+    def _anchor(self):
         snapshot_id = self.evm.snapshot()
         try:
             with self.evm.patch.anchor():
@@ -252,11 +268,17 @@ class Env:
         gas: Optional[int] = None,
         value: int = 0,
         data: bytes = b"",
+        simulate=False,
     ):
         # simple wrapper around `execute_code` to help simulate calling
         # a contract from an EOA.
         ret = self.execute_code(
-            to_address=to_address, sender=sender, gas=gas, value=value, data=data
+            to_address=to_address,
+            sender=sender,
+            gas=gas,
+            value=value,
+            data=data,
+            simulate=simulate,
         )
         if ret.is_error:
             # differ from execute_code, consumers of execute_code want to get
@@ -277,6 +299,7 @@ class Env:
         override_bytecode: Optional[bytes] = None,
         ir_executor: Any = None,
         is_modifying: bool = True,
+        simulate: bool = False,
         start_pc: int = 0,
         fake_codesize: Optional[int] = None,
         contract: Any = None,  # the calling VyperContract
@@ -293,27 +316,33 @@ class Env:
             bytecode = self.evm.get_code(to)
 
         is_static = not is_modifying
-        ret = self.evm.execute_code(
-            sender=sender,
-            to=to,
-            gas=gas,
-            gas_price=self.get_gas_price(),
-            value=value,
-            bytecode=bytecode,
-            data=data,
-            is_static=is_static,
-            fake_codesize=fake_codesize,
-            start_pc=start_pc,
-            ir_executor=ir_executor,
-            contract=contract,
-        )
-        if self._coverage_enabled:
-            self._trace_computation(ret, contract)
+        anchor: Any  # mypy hint
+        if simulate:
+            anchor = self._anchor
+        else:
+            anchor = contextlib.nullcontext
+        with anchor():
+            ret = self.evm.execute_code(
+                sender=sender,
+                to=to,
+                gas=gas,
+                gas_price=self.get_gas_price(),
+                value=value,
+                bytecode=bytecode,
+                data=data,
+                is_static=is_static,
+                fake_codesize=fake_codesize,
+                start_pc=start_pc,
+                ir_executor=ir_executor,
+                contract=contract,
+            )
+            if self._coverage_enabled:
+                self._trace_computation(ret, contract)
 
-        if ret._gas_meter_class != NoGasMeter:
-            self._update_gas_used(ret.get_gas_used())
+            if ret._gas_meter_class != NoGasMeter:
+                self._update_gas_used(ret.get_gas_used())
 
-        return ret
+            return ret
 
     # trace pcs for coverage sake. dummy function which
     # just issues the right calls to _trace_cov() to get picked
@@ -362,7 +391,7 @@ class Env:
         block_delta: int = 12,
     ) -> None:
         if (seconds is None) == (blocks is None):
-            raise ValueError("One of seconds or blocks should be set")
+            raise ValueError("One (and only one) of seconds or blocks should be set")
         if seconds is not None:
             blocks = seconds // block_delta
         else:
@@ -371,3 +400,12 @@ class Env:
 
         self.evm.patch.timestamp += seconds
         self.evm.patch.block_number += blocks
+
+    # EVM API - access to evm.patch attributes
+    @property
+    def timestamp(self) -> int:
+        return self.evm.patch.timestamp
+
+    @timestamp.setter
+    def timestamp(self, val: int) -> None:
+        self.evm.patch.timestamp = val
