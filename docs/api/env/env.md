@@ -169,7 +169,7 @@ A wrapper class around py-evm which provides a "contract-centric" API. More deta
 
 ## `execute_code`
 
-!!! function "`boa.env.execute_code() -> bytes`"
+!!! function "`boa.env.execute_code() -> ComputationAPI`"
 
     **Description**
 
@@ -191,7 +191,17 @@ A wrapper class around py-evm which provides a "contract-centric" API. More deta
 
     **Returns**
 
-    The return value from the top-level call.
+    A `ComputationAPI` object containing the execution result. Key attributes include:
+    - `output`: The return data as bytes
+    - `is_error`: Boolean indicating if the execution failed
+    - `error`: The exception if execution failed
+    - `gas_used`: Amount of gas consumed
+
+    ---
+
+    **Note**
+
+    Unlike `raw_call`, this method returns the computation object directly without raising exceptions on errors.
 
 ---
 
@@ -524,12 +534,11 @@ A wrapper class around py-evm which provides a "contract-centric" API. More deta
 
 ## `raw_call`
 
-!!! function "`boa.env.raw_call(to_address) -> bytes`"
+!!! function "`boa.env.raw_call(to_address) -> ComputationAPI`"
 
     **Description**
 
-    TODO too many details this should go in the explain section
-    Simple wrapper around `execute_code`, to execute as if the contract is being called from an EOA.
+    Execute a call to a contract address, simulating an EOA transaction.
 
     ---
 
@@ -540,12 +549,32 @@ A wrapper class around py-evm which provides a "contract-centric" API. More deta
     - `gas`: The gas limit provided for the execution (a.k.a. `msg.gas`).
     - `value`: The ether value to attach to the execution (a.k.a `msg.value`).
     - `data`: The data to attach to the execution (a.k.a. `msg.data`).
+    - `simulate`: If True, the call is executed in a context that is rolled back after execution.
 
     ---
 
     **Returns**
 
-    The return value from the top-level call.
+    A `ComputationAPI` object containing the execution result. Key attributes include:
+    - `output`: The return data as bytes
+    - `is_error`: Boolean indicating if the execution failed
+    - `error`: The exception if execution failed
+    - `gas_used`: Amount of gas consumed
+
+    ---
+
+    **Important**
+
+    Unlike `execute_code`, if the computation fails (`is_error` is True), this method raises the error as an exception.
+
+    ---
+
+    **Example**
+
+    ```python
+    >>> computation = boa.env.raw_call(contract_address, data=b"\x00\x00\x00\x00")
+    >>> print(computation.output.hex())
+    ```
 
 ---
 
@@ -658,3 +687,100 @@ A wrapper class around py-evm which provides a "contract-centric" API. More deta
     **Note**
 
     This is useful when you want to start a fresh gas measurement.
+
+---
+
+## `set_balance`
+
+!!! function "`boa.env.set_balance(address: str, value: int)`"
+
+    **Description**
+
+    Set the ether balance of an account. This is useful for testing scenarios that require specific account balances.
+
+    ---
+
+    **Parameters**
+
+    - `address`: The address to set the balance for
+    - `value`: The new balance in wei
+
+    ---
+
+    **Example**
+
+    ```python
+    >>> import boa
+    >>> boa.env.set_balance("0x1234...", 10**18)  # Set balance to 1 ETH
+    >>> boa.env.get_balance("0x1234...")
+    1000000000000000000
+    ```
+
+---
+
+## `set_storage`
+
+!!! function "`boa.env.set_storage(address: str, slot: int, value: int)`"
+
+    **Description**
+
+    Set a value in a specific storage slot for the given address. This allows direct manipulation of contract storage, which can be useful for advanced testing scenarios.
+
+    ---
+
+    **Parameters**
+
+    - `address`: The address of the contract
+    - `slot`: The storage slot to write to
+    - `value`: The value to store
+
+    ---
+
+    **Example**
+
+    ```python
+    >>> import boa
+    >>> # Set storage slot 0 to value 42
+    >>> boa.env.set_storage("0x1234...", 0, 42)
+    >>> boa.env.get_storage("0x1234...", 0)
+    42
+    ```
+
+    ---
+
+    **Warning**
+
+    Direct storage manipulation can break contract invariants. Use with caution.
+
+---
+
+## `set_code`
+
+!!! function "`boa.env.set_code(address: str, bytecode: bytes)`"
+
+    **Description**
+
+    Set the bytecode at a specific address. This is useful for testing upgrades or deploying code to specific addresses.
+
+    ---
+
+    **Parameters**
+
+    - `address`: The address to set the code at
+    - `bytecode`: The bytecode to deploy
+
+    ---
+
+    **Example**
+
+    ```python
+    >>> import boa
+    >>> bytecode = bytes.fromhex("6080604052...")
+    >>> boa.env.set_code("0x1234...", bytecode)
+    ```
+
+    ---
+
+    **Warning**
+
+    This operation bypasses normal deployment procedures and should be used carefully.
