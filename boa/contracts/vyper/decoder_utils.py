@@ -73,13 +73,10 @@ def decode_vyper_object(mem, typ):
     if isinstance(typ, BoolT):
         return bool.from_bytes(mem[31:32], "big")
     if isinstance(typ, DecimalT):
+        getcontext().prec = 78
         raw_value = int.from_bytes(mem[:32], "big")
         raw_value = unsigned_to_signed(raw_value, 256)
-        PRECISION = 10
-        neg = raw_value < 0
-        s = f"{abs(raw_value):0{PRECISION + 1}d}"
-        int_part, dec_part = s[:-PRECISION] or "0", s[-PRECISION:]
-        return f"{'-' if neg else ''}{int_part}.{dec_part}"
+        return Decimal(raw_value) / Decimal(10**10)
     if isinstance(typ, IntegerT):
         ret = int.from_bytes(mem[:32], "big")
         if typ.is_signed:
