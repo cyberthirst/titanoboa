@@ -1,3 +1,4 @@
+from decimal import Decimal, getcontext
 from eth_utils import to_checksum_address
 from vyper.semantics.types import (
     AddressT,
@@ -5,6 +6,7 @@ from vyper.semantics.types import (
     BytesM_T,
     BytesT,
     DArrayT,
+    DecimalT,
     IntegerT,
     InterfaceT,
     SArrayT,
@@ -70,6 +72,14 @@ def decode_vyper_object(mem, typ):
         return to_checksum_address(mem[12:32].tobytes())
     if isinstance(typ, BoolT):
         return bool.from_bytes(mem[31:32], "big")
+    if isinstance(typ, DecimalT):
+        raw_value = int.from_bytes(mem[:32], "big")
+        raw_value = unsigned_to_signed(raw_value, 256)
+        PRECISION = 10
+        neg = raw_value < 0
+        s = f"{abs(raw_value):0{PRECISION + 1}d}"
+        int_part, dec_part = s[:-PRECISION] or "0", s[-PRECISION:]
+        return f"{'-' if neg else ''}{int_part}.{dec_part}"
     if isinstance(typ, IntegerT):
         ret = int.from_bytes(mem[:32], "big")
         if typ.is_signed:
