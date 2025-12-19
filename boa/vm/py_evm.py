@@ -564,6 +564,11 @@ class PyEVM:
         data = self.vm.state._account_db.get_storage(address.canonical_address, slot)
         return data.to_bytes(32, "big")
 
+    def clear_transient_storage(self) -> None:
+        """Clear all transient storage (EIP-1153). Only available in Cancun+."""
+        if hasattr(self.vm.state, "clear_transient_storage"):
+            self.vm.state.clear_transient_storage()
+
 
 GENESIS_PARAMS = {"difficulty": constants.GENESIS_DIFFICULTY, "gas_limit": int(1e8)}
 

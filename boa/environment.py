@@ -383,6 +383,10 @@ class Env:
     def set_storage(self, address: _AddressType, slot: int, value: int) -> None:
         self.evm.set_storage(Address(address), slot, value)
 
+    def clear_transient_storage(self) -> None:
+        """Clear all transient storage (EIP-1153). Only available in Cancun+."""
+        self.evm.clear_transient_storage()
+
     # function to time travel
     def time_travel(
         self,
