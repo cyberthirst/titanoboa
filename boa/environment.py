@@ -175,11 +175,15 @@ class Env:
     @contextlib.contextmanager
     def _anchor(self):
         snapshot_id = self.evm.snapshot()
+        sha3_backup = self.sha3_trace.copy()
+        sstore_backup = {k: v.copy() for k, v in self.sstore_trace.items()}
         try:
             with self.evm.patch.anchor():
                 yield
         finally:
             self.evm.revert(snapshot_id)
+            self.sha3_trace = sha3_backup
+            self.sstore_trace = sstore_backup
 
     @contextlib.contextmanager
     def sender(self, address):
