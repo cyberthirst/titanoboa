@@ -31,7 +31,17 @@ from vyper.compiler.output import build_abi_output, build_solc_json
 from vyper.compiler.settings import OptimizationLevel, anchor_settings
 from vyper.exceptions import VyperException
 from vyper.ir.optimizer import optimize
-from vyper.semantics.types import AddressT, DArrayT, HashMapT, SArrayT, StructT, TupleT
+from vyper.semantics.data_locations import DataLocation
+from vyper.semantics.types import (
+    AddressT,
+    BytesT,
+    DArrayT,
+    HashMapT,
+    SArrayT,
+    StringT,
+    StructT,
+    TupleT,
+)
 from vyper.utils import method_id
 
 from boa import BoaError
@@ -393,6 +403,54 @@ def unwrap_storage_key(sha3_db, k):
     return path
 
 
+def _final_value_type(typ):
+    while isinstance(typ, HashMapT):
+        typ = typ.value_type
+    return typ
+
+
+def _max_offset_slots_for_value(typ) -> int:
+    typ = _final_value_type(typ)
+    nwords = typ.get_size_in(DataLocation.STORAGE)
+    return max(0, nwords - 1)
+
+
+def _find_mapping_base_slot(sha3_64_db: dict, slot_int: int, max_offset: int) -> tuple[int, int]:
+    # Try exact slot first
+    if to_bytes(slot_int) in sha3_64_db:
+        return slot_int, 0
+
+    # Probe backward for contiguous value offset
+    for off in range(1, max_offset + 1):
+        adj = slot_int - off
+        if adj < 0:
+            break
+        if to_bytes(adj) in sha3_64_db:
+            return adj, off
+
+    return slot_int, 0
+
+
+def _encode_bytestring_for_decoder(raw: bytes) -> bytes:
+    length = len(raw)
+    padded_len = ((length + 31) // 32) * 32
+    return length.to_bytes(32, "big") + raw + b"\x00" * (padded_len - length)
+
+
+def _decode_hashmap_key(raw32: bytes, key_type, sha3_all: dict):
+    if isinstance(key_type, (StringT, BytesT)):
+        preimage = sha3_all.get(raw32)
+        if preimage is not None and len(preimage) <= key_type.length:
+            buf = _encode_bytestring_for_decoder(preimage)
+            try:
+                return decode_vyper_object(memoryview(buf), key_type)
+            except UnicodeDecodeError:
+                pass
+        return raw32.hex()
+
+    return decode_vyper_object(memoryview(raw32), key_type)
+
+
 def setpath(lens, path, val):
     for i, k in enumerate(path):
         if i == len(path) - 1:
@@ -425,21 +483,31 @@ class StorageVar:
     def get(self, truncate_limit=None):
         if isinstance(self.typ, HashMapT):
             ret = {}
+            max_offset = _max_offset_slots_for_value(self.typ)
+            seen_base_slots = set()
             for k in self.contract.env.sstore_trace.get(self.addr, set()):
-                path = unwrap_storage_key(self.contract.env.sha3_trace, k)
+                base_slot, _ = _find_mapping_base_slot(
+                    self.contract.env.sha3_64_trace, k, max_offset
+                )
+                path = unwrap_storage_key(self.contract.env.sha3_64_trace, base_slot)
                 if to_int(path[0]) != self.slot:
                     continue
+                if base_slot in seen_base_slots:
+                    continue
+                seen_base_slots.add(base_slot)
 
                 path = path[1:]  # drop the slot
                 path_t = []
 
                 ty = self.typ
                 for i, p in enumerate(path):
-                    path[i] = decode_vyper_object(memoryview(p), ty.key_type)
+                    path[i] = _decode_hashmap_key(
+                        bytes(p), ty.key_type, self.contract.env.sha3_trace
+                    )
                     path_t.append(ty.key_type)
                     ty = ty.value_type
 
-                val = self._decode(k, ty, truncate_limit)
+                val = self._decode(base_slot, ty, truncate_limit)
 
                 # set val only if value is nonzero
                 if val:

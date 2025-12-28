@@ -200,15 +200,14 @@ class Sha3PreimageTracer:
         # dispatch into py-evm
         self.sha3(computation)
 
-        if size != 64:
-            return
-
         preimage = computation._memory.read_bytes(offset, size)
 
         value = computation._stack.values[-1]
         image = to_bytes(value)
 
         self.env.sha3_trace[image] = preimage
+        if size == 64:
+            self.env.sha3_64_trace[image] = preimage
 
 
 class SstoreTracer:

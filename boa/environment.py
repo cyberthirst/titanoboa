@@ -39,6 +39,7 @@ class Env:
         self._code_registry = {}
 
         self.sha3_trace: dict = {}
+        self.sha3_64_trace: dict = {}
         self.sstore_trace: dict = {}
 
         self._gas_tracker = 0
@@ -90,6 +91,7 @@ class Env:
         # but sometimes don't, give caller the option.
         if reset_traces:
             self.sha3_trace = {}
+            self.sha3_64_trace = {}
             self.sstore_trace = {}
 
         self.evm.fork_rpc(rpc, block_identifier, debug=debug, **kwargs)
@@ -176,6 +178,7 @@ class Env:
     def _anchor(self):
         snapshot_id = self.evm.snapshot()
         sha3_backup = self.sha3_trace.copy()
+        sha3_64_backup = self.sha3_64_trace.copy()
         sstore_backup = {k: v.copy() for k, v in self.sstore_trace.items()}
         try:
             with self.evm.patch.anchor():
@@ -183,6 +186,7 @@ class Env:
         finally:
             self.evm.revert(snapshot_id)
             self.sha3_trace = sha3_backup
+            self.sha3_64_trace = sha3_64_backup
             self.sstore_trace = sstore_backup
 
     @contextlib.contextmanager
