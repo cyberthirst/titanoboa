@@ -4,6 +4,8 @@ Tests for storage dump functionality.
 These tests verify that storage dump correctly captures various storage types.
 """
 
+import pytest
+
 import boa
 
 
@@ -882,3 +884,127 @@ def set_list():
     contract.set_list()
     dump = _get_storage_dump(contract)
     assert dump["exampleList"] == [10, 11, 42]
+
+
+def test_hashmap_bytes_key_from_constructor():
+    """
+    Test that Bytes keys in HashMap are correctly captured in storage dump
+    when set in constructor.
+    """
+    source = """
+a: HashMap[Bytes[100], int128]
+
+@deploy
+def __init__():
+    self.a[b"hello"] = 1069
+"""
+    contract = boa.loads(source)
+    dump = _get_storage_dump(contract)
+    assert b"hello" in dump.get("a", {}), f"Expected b'hello' key in dump, got: {dump}"
+    assert dump["a"][b"hello"] == 1069
+
+
+def test_hashmap_string_key_from_constructor():
+    """
+    Test that String keys in HashMap are correctly captured in storage dump
+    when set in constructor.
+    """
+    source = """
+a: HashMap[String[100], int128]
+
+@deploy
+def __init__():
+    self.a["hello"] = 1069
+"""
+    contract = boa.loads(source)
+    dump = _get_storage_dump(contract)
+    assert "hello" in dump.get("a", {}), f"Expected 'hello' key in dump, got: {dump}"
+    assert dump["a"]["hello"] == 1069
+
+
+def test_hashmap_struct_late_fields_from_constructor():
+    """
+    Test that HashMap entries are captured when only non-first struct fields are set.
+
+    Previously, entries were dropped when only late struct fields (not field 0) were set.
+    """
+    source = """
+struct W:
+    a: uint256
+    f: uint256
+    g: uint256
+
+w: HashMap[int128, W]
+
+@deploy
+def __init__():
+    self.w[1].a = 11
+    self.w[3].f = 750
+    self.w[3].g = 751
+"""
+    contract = boa.loads(source)
+    dump = _get_storage_dump(contract)
+    assert 1 in dump["w"], "w[1] should exist"
+    assert 3 in dump["w"], "w[3] should exist (only f,g set)"
+    assert dump["w"][1]["a"] == 11
+    assert dump["w"][3]["f"] == 750
+    assert dump["w"][3]["g"] == 751
+
+
+def test_hashmap_struct_with_nested_array():
+    """
+    Test HashMap with struct containing nested static array.
+
+    Tests that all keys are tracked when struct has nested array and
+    different fields are written for different keys.
+    """
+    source = """
+struct W:
+    a: uint256
+    e: int128[3][3]
+    f: uint256
+
+w: public(HashMap[int128, W])
+
+@deploy
+def __init__():
+    self.w[1].a = 11
+    self.w[2].e[1][2] = 17
+    self.w[3].f = 750
+"""
+    contract = boa.loads(source)
+    dump = _get_storage_dump(contract)
+    assert 1 in dump["w"], "w[1] should exist"
+    assert 2 in dump["w"], "w[2] should exist"
+    assert 3 in dump["w"], "w[3] should exist"
+    assert dump["w"][1]["a"] == 11
+    assert dump["w"][2]["e"][1][2] == 17
+    assert dump["w"][3]["f"] == 750
+
+
+@pytest.mark.xfail(reason="venom codegen may not properly record SHA3 preimages for storage ops")
+def test_hashmap_struct_with_nested_array_venom():
+    """
+    Test HashMap with struct containing nested static array using venom codegen.
+
+    Venom codegen may not properly record SHA3 preimages for storage operations.
+    """
+    source = """
+struct W:
+    a: uint256
+    e: int128[3][3]
+    f: uint256
+
+w: public(HashMap[int128, W])
+
+@deploy
+def __init__():
+    self.w[1].a = 11
+    self.w[2].e[1][2] = 17
+    self.w[3].f = 750
+"""
+    contract = boa.loads(source, compiler_args={"experimental_codegen": True})
+    dump = _get_storage_dump(contract)
+    assert 1 in dump["w"], "w[1] should exist"
+    assert 2 in dump["w"], "w[2] should exist"
+    assert 3 in dump["w"], "w[3] should exist"
