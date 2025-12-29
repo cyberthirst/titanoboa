@@ -1,10 +1,11 @@
 # wrapper module around whatever encoder we are using
 from collections import deque
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional
 
 from eth.codecs.abi import nodes
 from eth.codecs.abi.decoder import DecodeError, Decoder
 from eth.codecs.abi.encoder import Encoder
+from eth.codecs.abi.encoder import EncodeError
 from eth.codecs.abi.exceptions import ABIError
 from eth.codecs.abi.nodes import ABITypeNode
 from eth.codecs.abi.parser import Parser
@@ -12,6 +13,35 @@ from eth_typing import Address as PYEVM_Address
 from eth_utils import to_canonical_address, to_checksum_address
 
 from boa.util.lrudict import lrudict
+
+
+def _hex_to_bytes(value: str, expected_size: Optional[int] = None) -> bytes:
+    if not isinstance(value, str):
+        raise TypeError(f"Expected str, got {type(value).__name__}")
+
+    if not value.startswith(("0x", "0X")):
+        raise ValueError(
+            f"Hex string must start with '0x', got: {value[:20]!r}"
+            + ("..." if len(value) > 20 else "")
+        )
+
+    hex_part = value[2:]
+
+    try:
+        result = bytes.fromhex(hex_part)
+    except ValueError:
+        raise ValueError(
+            f"Invalid hex string: {value[:24]!r}"
+            + ("..." if len(value) > 24 else "")
+        )
+
+    if expected_size is not None and len(result) != expected_size:
+        raise ValueError(
+            f"bytes{expected_size} expects {expected_size} bytes, "
+            f"got {len(result)} from {value!r}"
+        )
+
+    return result
 
 _parsers: dict[str, ABITypeNode] = {}
 
@@ -50,12 +80,29 @@ class _ABIEncoder(Encoder):
     """
     Custom encoder that extracts the address from an `Address` object
     and passes the result to the base encoder.
+
+    Also accepts hex strings for bytes/bytesN types.
     """
 
     @classmethod
     def visit_AddressNode(cls, node: nodes.AddressNode, value) -> bytes:
         value = getattr(value, "address", value)
         return super().visit_AddressNode(node, value)
+
+    @classmethod
+    def visit_BytesNode(cls, node: nodes.BytesNode, value) -> bytes:
+        """
+        Encode bytes, accepting hex strings in addition to bytes/bytearray.
+
+        For bytesN (fixed size), enforces exact length.
+        For bytes (dynamic), accepts any valid hex string.
+        """
+        if isinstance(value, str):
+            try:
+                value = _hex_to_bytes(value, expected_size=node.size)
+            except (ValueError, TypeError) as e:
+                raise EncodeError(str(node), value, str(e))
+        return super().visit_BytesNode(node, value)
 
 
 class _ABIDecoder(Decoder):
