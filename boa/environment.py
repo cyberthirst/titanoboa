@@ -180,6 +180,9 @@ class Env:
         sha3_backup = self.sha3_trace.copy()
         sha3_64_backup = self.sha3_64_trace.copy()
         sstore_backup = {k: v.copy() for k, v in self.sstore_trace.items()}
+        contracts_backup = self._contracts.copy()
+        code_registry_backup = self._code_registry.copy()
+        aliases_backup = self._aliases.copy()
         try:
             with self.evm.patch.anchor():
                 yield
@@ -188,6 +191,9 @@ class Env:
             self.sha3_trace = sha3_backup
             self.sha3_64_trace = sha3_64_backup
             self.sstore_trace = sstore_backup
+            self._contracts = contracts_backup
+            self._code_registry = code_registry_backup
+            self._aliases = aliases_backup
 
     @contextlib.contextmanager
     def sender(self, address):
