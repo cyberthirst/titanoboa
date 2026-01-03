@@ -540,7 +540,7 @@ class StorageModel:
         ret = FrameDetail("storage")
 
         for k, v in vars(self).items():
-            t = v.get()
+            t = v.get(truncate_limit=1024 * 32)
             if t is None:
                 t = "<truncated>"  # too large, truncated
             ret[k] = t
