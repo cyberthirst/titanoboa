@@ -230,6 +230,24 @@ class SstoreTracer:
         self.sstore(computation)
 
 
+class TstoreTracer:
+    mnemonic = "TSTORE"
+
+    def __init__(self, tstore_op, env):
+        self.env = env
+        self.tstore = tstore_op
+
+    def __call__(self, computation):
+        value, slot = [to_int(t) for t in computation._stack.values[-2:]]
+        account = Address(computation.msg.storage_address)
+
+        # track transient storage writes for introspection
+        self.env.tstore_trace.setdefault(account, set()).add(slot)
+
+        # dispatch into py-evm
+        self.tstore(computation)
+
+
 # ### End section: sha3 tracing
 
 
@@ -409,6 +427,7 @@ class PyEVM:
         # patch in tracing opcodes
         c.opcodes[0x20] = Sha3PreimageTracer(c.opcodes[0x20], self.env)
         c.opcodes[0x55] = SstoreTracer(c.opcodes[0x55], self.env)
+        c.opcodes[0x5D] = TstoreTracer(c.opcodes[0x5D], self.env)
 
     def enable_fast_mode(self, flag: bool = True):
         if flag:
@@ -562,6 +581,10 @@ class PyEVM:
     def get_storage_slot(self, address: Address, slot: int) -> bytes:
         data = self.vm.state._account_db.get_storage(address.canonical_address, slot)
         return data.to_bytes(32, "big")
+
+    def get_transient_storage_slot(self, address: Address, slot: int) -> bytes:
+        raw = self.vm.state.get_transient_storage(address.canonical_address, slot)
+        return to_bytes(raw)
 
     def clear_transient_storage(self) -> None:
         """Clear all transient storage (EIP-1153). Only available in Cancun+."""

@@ -41,6 +41,7 @@ class Env:
         self.sha3_trace: dict = {}
         self.sha3_64_trace: dict = {}
         self.sstore_trace: dict = {}
+        self.tstore_trace: dict = {}
 
         self._gas_tracker = 0
 
@@ -93,6 +94,7 @@ class Env:
             self.sha3_trace = {}
             self.sha3_64_trace = {}
             self.sstore_trace = {}
+            self.tstore_trace = {}
 
         self.evm.fork_rpc(rpc, block_identifier, debug=debug, **kwargs)
 
@@ -180,6 +182,7 @@ class Env:
         sha3_backup = self.sha3_trace.copy()
         sha3_64_backup = self.sha3_64_trace.copy()
         sstore_backup = {k: v.copy() for k, v in self.sstore_trace.items()}
+        tstore_backup = {k: v.copy() for k, v in self.tstore_trace.items()}
         contracts_backup = self._contracts.copy()
         code_registry_backup = self._code_registry.copy()
         aliases_backup = self._aliases.copy()
@@ -191,6 +194,7 @@ class Env:
             self.sha3_trace = sha3_backup
             self.sha3_64_trace = sha3_64_backup
             self.sstore_trace = sstore_backup
+            self.tstore_trace = tstore_backup
             self._contracts = contracts_backup
             self._code_registry = code_registry_backup
             self._aliases = aliases_backup
@@ -397,9 +401,14 @@ class Env:
     def set_storage(self, address: _AddressType, slot: int, value: int) -> None:
         self.evm.set_storage(Address(address), slot, value)
 
+    def get_transient_storage(self, address: _AddressType, slot: int) -> int:
+        raw = self.evm.get_transient_storage_slot(Address(address), slot)
+        return int.from_bytes(raw, "big")
+
     def clear_transient_storage(self) -> None:
         """Clear all transient storage (EIP-1153). Only available in Cancun+."""
         self.evm.clear_transient_storage()
+        self.tstore_trace = {}
 
     # function to time travel
     def time_travel(

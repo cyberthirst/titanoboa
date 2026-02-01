@@ -460,18 +460,21 @@ def setpath(lens, path, val):
 
 
 class StorageVar:
-    def __init__(self, contract, slot, typ):
+    def __init__(self, contract, slot, typ, transient: bool = False):
         self.contract = contract
         self.addr = self.contract._address
         self.slot = slot
         self.typ = typ
+        self.transient = transient
 
     def _decode(self, slot, typ, truncate_limit=None):
         n = typ.memory_bytes_required
         if truncate_limit is not None and n > truncate_limit:
             return None  # indicate failure to caller
 
-        fakemem = ByteAddressableStorage(self.contract.env.evm, self.addr, slot)
+        fakemem = ByteAddressableStorage(
+            self.contract.env.evm, self.addr, slot, transient=self.transient
+        )
         return decode_vyper_object(fakemem, typ)
 
     def _dealias(self, maybe_address):
@@ -480,12 +483,18 @@ class StorageVar:
         except KeyError:  # not found, return the input
             return maybe_address
 
+    @property
+    def _trace(self):
+        if self.transient:
+            return self.contract.env.tstore_trace
+        return self.contract.env.sstore_trace
+
     def get(self, truncate_limit=None):
         if isinstance(self.typ, HashMapT):
             ret = {}
             max_offset = _max_offset_slots_for_value(self.typ)
             seen_base_slots = set()
-            for k in self.contract.env.sstore_trace.get(self.addr, set()):
+            for k in self._trace.get(self.addr, set()):
                 base_slot, _ = _find_mapping_base_slot(
                     self.contract.env.sha3_64_trace, k, max_offset
                 )
@@ -527,19 +536,31 @@ class StorageVar:
 
 # data structure to represent the storage variables in a contract
 class StorageModel:
-    def __init__(self, contract):
+    def __init__(self, contract, transient: bool = False):
         compiler_data = contract.compiler_data
+        self._transient = transient
+        layout_key = "transient_storage_layout" if transient else "storage_layout"
+        layout = compiler_data.storage_layout.get(layout_key, {})
         # TODO: recurse into imported modules
         for k, v in contract.module_t.variables.items():
-            is_storage = not (v.is_immutable or v.is_constant or v.is_transient)
-            if is_storage:
-                slot = compiler_data.storage_layout["storage_layout"][k]["slot"]
-                setattr(self, k, StorageVar(contract, slot, v.typ))
+            if transient:
+                is_target = v.is_transient
+            else:
+                is_target = not (v.is_immutable or v.is_constant or v.is_transient)
+            if is_target:
+                slot_info = layout.get(k)
+                if slot_info is None:
+                    continue
+                slot = slot_info["slot"]
+                setattr(self, k, StorageVar(contract, slot, v.typ, transient=transient))
 
     def dump(self):
-        ret = FrameDetail("storage")
+        label = "transient_storage" if self._transient else "storage"
+        ret = FrameDetail(label)
 
         for k, v in vars(self).items():
+            if k.startswith("_"):
+                continue
             t = v.get(truncate_limit=1024 * 32)
             if t is None:
                 t = "<truncated>"  # too large, truncated
@@ -648,7 +669,8 @@ class VyperContract(_BaseVyperContract):
         # not sure if this is accurate in the presence of modules
         self._function_id = len(self.module_t.function_defs)
 
-        self._storage = StorageModel(self)
+        self._storage = StorageModel(self, transient=False)
+        self._transient_storage = StorageModel(self, transient=True)
 
         self._eval_cache = lrudict(0x1000)
 

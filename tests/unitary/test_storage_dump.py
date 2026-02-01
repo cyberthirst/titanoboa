@@ -2,6 +2,7 @@
 Tests for storage dump functionality.
 
 These tests verify that storage dump correctly captures various storage types.
+Tests are parametrized to run for both persistent storage and transient storage.
 """
 
 import pytest
@@ -9,8 +10,19 @@ import pytest
 import boa
 
 
+def _get_dump(contract, transient=False):
+    if transient:
+        return contract._transient_storage.dump()
+    return contract._storage.dump()
+
+
+def _wrap_var(var_type, transient=False):
+    if transient:
+        return f"transient({var_type})"
+    return var_type
+
+
 def _get_storage_dump(contract):
-    """Helper to get storage dump from a contract."""
     return contract._storage.dump()
 
 
@@ -1008,3 +1020,480 @@ def __init__():
     assert 1 in dump["w"], "w[1] should exist"
     assert 2 in dump["w"], "w[2] should exist"
     assert 3 in dump["w"], "w[3] should exist"
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_uint256_parametrized(transient):
+    var_decl = _wrap_var("uint256", transient)
+    src = f"""
+d: {var_decl}
+
+@external
+def foo() -> uint256:
+    self.d = 42
+    return self.d
+"""
+    c = boa.loads(src)
+    assert c.foo() == 42
+    dump = _get_dump(c, transient)
+    assert dump["d"] == 42
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_dynarray_parametrized(transient):
+    var_decl = _wrap_var("DynArray[uint256, 10]", transient)
+    src = f"""
+a: {var_decl}
+
+@external
+def foo():
+    self.a = [1, 2, 3]
+    self.a[0] = 10
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["a"] == [10, 2, 3]
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_string_parametrized(transient):
+    var_decl = _wrap_var("String[32]", transient)
+    src = f"""
+s: {var_decl}
+
+@external
+def foo():
+    self.s = "hello"
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["s"] == "hello"
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_bytes_parametrized(transient):
+    var_decl = _wrap_var("Bytes[32]", transient)
+    src = f"""
+b: {var_decl}
+
+@external
+def foo():
+    self.b = b"world"
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["b"] == b"world"
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_hashmap_parametrized(transient):
+    var_decl = _wrap_var("HashMap[uint256, uint256]", transient)
+    src = f"""
+h: {var_decl}
+
+@external
+def foo():
+    self.h[1] = 100
+    self.h[2] = 200
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["h"] == {1: 100, 2: 200}
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_struct_parametrized(transient):
+    var_decl = _wrap_var("S", transient)
+    src = f"""
+struct S:
+    a: uint256
+    b: uint256
+
+s: {var_decl}
+
+@external
+def foo():
+    self.s = S(a=10, b=20)
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["s"]["a"] == 10
+    assert dump["s"]["b"] == 20
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_static_array_parametrized(transient):
+    var_decl = _wrap_var("uint256[3]", transient)
+    src = f"""
+arr: {var_decl}
+
+@external
+def foo():
+    self.arr[0] = 1
+    self.arr[1] = 2
+    self.arr[2] = 3
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["arr"] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_hashmap_struct_value_parametrized(transient):
+    var_decl = _wrap_var("HashMap[uint256, Data]", transient)
+    src = f"""
+struct Data:
+    x: uint256
+    y: uint256
+
+m: {var_decl}
+
+@external
+def foo():
+    self.m[1] = Data(x=10, y=20)
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["m"][1]["x"] == 10
+    assert dump["m"][1]["y"] == 20
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_nested_hashmap_parametrized(transient):
+    var_decl = _wrap_var("HashMap[uint256, HashMap[uint256, uint256]]", transient)
+    src = f"""
+m: {var_decl}
+
+@external
+def foo():
+    self.m[0][1] = 100
+    self.m[1][2] = 200
+"""
+    c = boa.loads(src)
+    c.foo()
+    dump = _get_dump(c, transient)
+    assert dump["m"][0][1] == 100
+    assert dump["m"][1][2] == 200
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_hashmap_string_key_parametrized(transient):
+    var_decl = _wrap_var("HashMap[String[64], uint256]", transient)
+    src = f"""
+balances: {var_decl}
+
+@external
+def set_balance(name: String[64], amount: uint256):
+    self.balances[name] = amount
+"""
+    c = boa.loads(src)
+    c.set_balance("alice", 1000)
+    c.set_balance("bob", 2000)
+    dump = _get_dump(c, transient)
+    assert dump["balances"]["alice"] == 1000
+    assert dump["balances"]["bob"] == 2000
+
+
+def test_mixed_storage_and_transient():
+    src = """
+persistent_val: uint256
+transient_val: transient(uint256)
+
+@external
+def set_both(p: uint256, t: uint256):
+    self.persistent_val = p
+    self.transient_val = t
+"""
+    c = boa.loads(src)
+    c.set_both(100, 200)
+
+    storage_dump = c._storage.dump()
+    transient_dump = c._transient_storage.dump()
+
+    assert storage_dump["persistent_val"] == 100
+    assert "transient_val" not in storage_dump
+
+    assert transient_dump["transient_val"] == 200
+    assert "persistent_val" not in transient_dump
+
+
+def test_mixed_storage_and_transient_hashmap():
+    src = """
+persistent_map: HashMap[uint256, uint256]
+transient_map: transient(HashMap[uint256, uint256])
+
+@external
+def set_both():
+    self.persistent_map[1] = 100
+    self.persistent_map[2] = 200
+    self.transient_map[10] = 1000
+    self.transient_map[20] = 2000
+"""
+    c = boa.loads(src)
+    c.set_both()
+
+    storage_dump = c._storage.dump()
+    transient_dump = c._transient_storage.dump()
+
+    assert storage_dump["persistent_map"] == {1: 100, 2: 200}
+    assert "transient_map" not in storage_dump
+
+    assert transient_dump["transient_map"] == {10: 1000, 20: 2000}
+    assert "persistent_map" not in transient_dump
+
+
+def test_mixed_storage_and_transient_struct():
+    src = """
+struct Data:
+    x: uint256
+    y: uint256
+
+persistent_data: Data
+transient_data: transient(Data)
+
+@external
+def set_both():
+    self.persistent_data = Data(x=1, y=2)
+    self.transient_data = Data(x=10, y=20)
+"""
+    c = boa.loads(src)
+    c.set_both()
+
+    storage_dump = c._storage.dump()
+    transient_dump = c._transient_storage.dump()
+
+    assert storage_dump["persistent_data"]["x"] == 1
+    assert storage_dump["persistent_data"]["y"] == 2
+    assert transient_dump["transient_data"]["x"] == 10
+    assert transient_dump["transient_data"]["y"] == 20
+
+
+def test_mixed_complex_scenario():
+    src = """
+struct Info:
+    value: uint256
+    name: String[32]
+
+counter: uint256
+cache: transient(uint256)
+users: HashMap[address, uint256]
+temp_users: transient(HashMap[address, uint256])
+info: Info
+temp_info: transient(Info)
+
+@external
+def set_all(addr: address):
+    self.counter = 42
+    self.cache = 999
+    self.users[addr] = 100
+    self.temp_users[addr] = 200
+    self.info = Info(value=1, name="persistent")
+    self.temp_info = Info(value=2, name="transient")
+"""
+    c = boa.loads(src)
+    addr = boa.env.generate_address()
+    c.set_all(addr)
+
+    storage_dump = c._storage.dump()
+    transient_dump = c._transient_storage.dump()
+
+    assert storage_dump["counter"] == 42
+    assert storage_dump["users"][addr] == 100
+    assert storage_dump["info"]["value"] == 1
+    assert storage_dump["info"]["name"] == "persistent"
+
+    assert transient_dump["cache"] == 999
+    assert transient_dump["temp_users"][addr] == 200
+    assert transient_dump["temp_info"]["value"] == 2
+    assert transient_dump["temp_info"]["name"] == "transient"
+
+
+def test_transient_cleared_on_manual_clear():
+    src = """
+t: transient(uint256)
+s: uint256
+
+@external
+def set_both():
+    self.t = 42
+    self.s = 100
+"""
+    c = boa.loads(src)
+    c.set_both()
+
+    assert c._storage.dump()["s"] == 100
+    assert c._transient_storage.dump()["t"] == 42
+
+    boa.env.clear_transient_storage()
+
+    assert c._storage.dump()["s"] == 100
+    assert c._transient_storage.dump()["t"] == 0
+
+
+def test_transient_persists_across_calls():
+    src = """
+t: transient(uint256)
+
+@external
+def increment():
+    self.t += 1
+
+@external
+def get_t() -> uint256:
+    return self.t
+"""
+    c = boa.loads(src)
+
+    c.increment()
+    assert c.get_t() == 1
+    assert c._transient_storage.dump()["t"] == 1
+
+    c.increment()
+    assert c.get_t() == 2
+    assert c._transient_storage.dump()["t"] == 2
+
+    c.increment()
+    assert c.get_t() == 3
+    assert c._transient_storage.dump()["t"] == 3
+
+
+def test_transient_anchor_restores():
+    src = """
+t: transient(uint256)
+s: uint256
+
+@external
+def set_both(t_val: uint256, s_val: uint256):
+    self.t = t_val
+    self.s = s_val
+"""
+    c = boa.loads(src)
+    c.set_both(10, 20)
+
+    assert c._transient_storage.dump()["t"] == 10
+    assert c._storage.dump()["s"] == 20
+
+    with boa.env.anchor():
+        c.set_both(100, 200)
+        assert c._transient_storage.dump()["t"] == 100
+        assert c._storage.dump()["s"] == 200
+
+    assert c._transient_storage.dump()["t"] == 10
+    assert c._storage.dump()["s"] == 20
+
+
+def test_transient_dump_without_transient_vars():
+    src = """
+val: uint256
+
+@external
+def set_val():
+    self.val = 7
+"""
+    c = boa.loads(src)
+    c.set_val()
+
+    storage_dump = c._storage.dump()
+    transient_dump = c._transient_storage.dump()
+
+    assert storage_dump["val"] == 7
+    assert transient_dump == {}
+
+
+def test_transient_dump_defaults_without_writes():
+    src = """
+t: transient(uint256)
+s: transient(String[8])
+b: transient(Bytes[8])
+arr: transient(uint256[2])
+
+@external
+def noop():
+    pass
+"""
+    c = boa.loads(src)
+    dump = c._transient_storage.dump()
+    assert dump["t"] == 0
+    assert dump["s"] == ""
+    assert dump["b"] == b""
+    assert dump["arr"] == [0, 0]
+
+
+def test_transient_read_only_does_not_write():
+    src = """
+t: transient(uint256)
+
+@external
+def get() -> uint256:
+    return self.t
+"""
+    c = boa.loads(src)
+    assert c.get() == 0
+    dump = c._transient_storage.dump()
+    assert dump["t"] == 0
+
+
+def test_transient_overwrite_in_single_call():
+    src = """
+t: transient(uint256)
+
+@external
+def set_twice(y: uint256, z: uint256):
+    self.t = y
+    self.t = z
+"""
+    c = boa.loads(src)
+    c.set_twice(10, 99)
+    dump = c._transient_storage.dump()
+    assert dump["t"] == 99
+
+
+def test_transient_dynarray_persists_and_updates():
+    src = """
+d: transient(DynArray[uint256, 5])
+
+@external
+def push(v: uint256):
+    self.d.append(v)
+
+@external
+def set_index(i: uint256, v: uint256):
+    self.d[i] = v
+"""
+    c = boa.loads(src)
+    c.push(1)
+    c.push(2)
+    dump = c._transient_storage.dump()
+    assert dump["d"] == [1, 2]
+
+    c.set_index(0, 10)
+    dump = c._transient_storage.dump()
+    assert dump["d"] == [10, 2]
+
+
+def test_transient_hashmap_struct_late_field():
+    src = """
+struct Foo:
+    a: uint256
+    b: uint256
+    c: uint256
+
+m: transient(HashMap[uint256, Foo])
+
+@external
+def set_c():
+    self.m[1].c = 999
+"""
+    c = boa.loads(src)
+    c.set_c()
+
+    dump = c._transient_storage.dump()
+    assert dump["m"][1]["a"] == 0
+    assert dump["m"][1]["c"] == 999
