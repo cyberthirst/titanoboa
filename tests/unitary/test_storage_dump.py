@@ -615,6 +615,37 @@ def foo() -> uint256:
     assert dump["f"] == ""
 
 
+@pytest.mark.parametrize(
+    "var_type, expected",
+    [
+        ("uint256", 0),
+        ("bool", False),
+        ("Bytes[10]", b""),
+        ("String[10]", ""),
+        ("uint256[3]", [0, 0, 0]),
+        ("DynArray[uint256, 3]", []),
+        ("HashMap[uint256, uint256]", {}),
+    ],
+)
+def test_default_storage_and_transient_match(var_type, expected):
+    src = f"""
+a: {var_type}
+b: transient({var_type})
+
+@external
+def ping() -> uint256:
+    return 1
+"""
+    c = boa.loads(src)
+    assert c.ping() == 1
+
+    storage_dump = c._storage.dump()
+    transient_dump = c._transient_storage.dump()
+
+    assert storage_dump["a"] == transient_dump["b"]
+    assert storage_dump["a"] == expected
+
+
 def test_interface_storage():
     """Test interface stored in storage and dump."""
     src = """
