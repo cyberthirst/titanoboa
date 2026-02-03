@@ -1,5 +1,5 @@
-# wrapper module around whatever encoder we are using
 from collections import deque
+import decimal
 from typing import Annotated, Any, Optional
 
 from eth.codecs.abi import nodes
@@ -103,6 +103,22 @@ class _ABIEncoder(Encoder):
             except (ValueError, TypeError) as e:
                 raise EncodeError(str(node), value, str(e))
         return super().visit_BytesNode(node, value)
+
+    @classmethod
+    def visit_IntegerNode(cls, node: nodes.IntegerNode, value) -> bytes:
+        if isinstance(value, decimal.Decimal):
+            if node.bits != 168 or not node.is_signed:
+                raise EncodeError(str(node), value, "Decimal values are only supported for int168")
+
+            with decimal.localcontext(decimal.Context(prec=128)) as ctx:
+                scaled_value = value.scaleb(10).to_integral_exact()
+                if ctx.flags[decimal.Inexact]:
+                    raise EncodeError(
+                        str(node), value, "Precision of value is greater than allowed"
+                    )
+            value = int(scaled_value)
+
+        return super().visit_IntegerNode(node, value)
 
 
 class _ABIDecoder(Decoder):
