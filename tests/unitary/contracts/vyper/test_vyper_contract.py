@@ -1,4 +1,5 @@
 import boa
+from boa.util.abi import Address
 
 
 def test_decode_struct():
@@ -116,6 +117,70 @@ def foo() -> bool:
 
     assert c.contract_name == "<unknown>"
     assert c.filename == "<unknown>"
+
+
+def test_external_return_scalar_uint256():
+    code = """
+@external
+@pure
+def foo() -> uint256:
+    return 7
+    """
+    c = boa.loads(code)
+    ret = c.foo()
+    assert ret == 7
+    assert isinstance(ret, int)
+
+
+def test_external_return_single_tuple_scalar():
+    code = """
+@external
+@pure
+def foo() -> (uint256,):
+    return (0,)
+    """
+    c = boa.loads(code)
+    ret = c.foo()
+    assert ret == (0,)
+    assert isinstance(ret, tuple)
+    assert len(ret) == 1
+    assert isinstance(ret[0], int)
+
+
+def test_external_return_single_tuple_array():
+    code = """
+@external
+@pure
+def foo() -> (address[2],):
+    return ([0x0000000000000000000000000000000000000004,
+        0x1111111111111111111111111111111111111111],)
+    """
+    c = boa.loads(code)
+    ret = c.foo()
+    assert isinstance(ret, tuple)
+    assert len(ret) == 1
+    arr = ret[0]
+    assert isinstance(arr, list)
+    assert arr == [
+        Address("0x0000000000000000000000000000000000000004"),
+        Address("0x1111111111111111111111111111111111111111"),
+    ]
+
+
+def test_external_return_tuple_multi():
+    code = """
+@external
+@pure
+def foo() -> (uint256, bool):
+    return 1, True
+    """
+    c = boa.loads(code)
+    ret = c.foo()
+    assert ret == (1, True)
+    assert isinstance(ret, tuple)
+    assert len(ret) == 2
+    assert isinstance(ret[0], int)
+    assert isinstance(ret[1], bool)
 
 
 def test_stomp():

@@ -18,7 +18,10 @@ import vyper.semantics.namespace as vy_ns
 from eth.exceptions import VMError
 from vyper.ast.nodes import VariableDecl
 from vyper.ast.parse import parse_to_ast
-from vyper.codegen.core import calculate_type_for_external_return
+from vyper.codegen.core import (
+    calculate_type_for_external_return,
+    needs_external_call_wrap,
+)
 from vyper.codegen.function_definitions import (
     generate_ir_for_external_function,
     generate_ir_for_internal_function,
@@ -858,8 +861,8 @@ class VyperContract(_BaseVyperContract):
         return_typ = calculate_type_for_external_return(vyper_typ)
         ret = abi_decode(return_typ.abi_type.selector_name(), computation.output)
 
-        # unwrap the tuple if needed
-        if not isinstance(vyper_typ, TupleT):
+        # unwrap ABI tuple wrapper if needed
+        if needs_external_call_wrap(vyper_typ):
             (ret,) = ret
 
         return vyper_object(ret, vyper_typ)
