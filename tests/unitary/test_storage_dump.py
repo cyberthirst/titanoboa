@@ -197,6 +197,24 @@ def foo() -> uint256:
     assert dump["s"] == "hello"
 
 
+def test_storage_string_non_utf8_surrogateescape():
+    """Test String storage dump with non-UTF-8 bytes (surrogateescape)."""
+    src = """
+s: String[34]
+
+@external
+def foo():
+    self.s = convert(
+        concat(b'\\xff', b'test', b'', b'\\x00', b'\\x00', b''), String[34]
+    )
+    """
+    c = boa.loads(src)
+    c.foo()
+
+    dumped = _get_storage_dump(c)["s"]
+    assert dumped.encode("utf-8", errors="surrogateescape") == b"\\xfftest\\x00\\x00"
+
+
 def test_len_builtin_bytes():
     """Test Bytes storage and dump."""
     src = """
