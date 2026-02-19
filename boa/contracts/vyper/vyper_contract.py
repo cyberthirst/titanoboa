@@ -562,7 +562,7 @@ class StorageModel:
         ret = FrameDetail(label)
 
         for k, v in vars(self).items():
-            if k.startswith("_"):
+            if not isinstance(v, StorageVar):
                 continue
             t = v.get(truncate_limit=1024 * 32)
             if t is None:
