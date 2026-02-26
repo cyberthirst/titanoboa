@@ -8,23 +8,60 @@ from vyper.codegen.function_definitions import (
 )
 from vyper.codegen.ir_node import IRnode
 from vyper.codegen.module import _runtime_reachable_functions, _selector_section_linear
+from vyper.compiler.input_bundle import FileInput
 from vyper.compiler.settings import anchor_settings
 from vyper.exceptions import InvalidType
 from vyper.ir import compile_ir, optimizer
 from vyper.semantics.analysis.constant_folding import ConstantFolder
 from vyper.semantics.analysis.utils import get_exact_type_from_node
-from vyper.venom import generate_assembly_experimental
-
-# TODO remove once vyper 0.4.4 is released
-try:
-    from vyper.venom import generate_venom
-except ImportError:
-    from vyper.venom import generate_ir as generate_venom
 
 from boa.contracts.vyper.ir_executor import executor_from_ir
 
 # id used internally for method id name
 _METHOD_ID_VAR = "_calldata_method_id"
+
+
+def _compile_with_augmented_source(vyper_function, contract):
+    compiler_data = contract.compiler_data
+    source = compiler_data.source_code.rstrip() + "\n\n" + vyper_function.strip() + "\n"
+
+    file_input = FileInput(
+        contents=source,
+        source_id=compiler_data.file_input.source_id,
+        path=compiler_data.file_input.path,
+        resolved_path=compiler_data.file_input.resolved_path,
+    )
+
+    kwargs = {}
+    if hasattr(compiler_data, "expected_integrity_sum"):
+        kwargs["integrity_sum"] = compiler_data.expected_integrity_sum
+    if hasattr(compiler_data, "storage_layout_override"):
+        kwargs["storage_layout"] = compiler_data.storage_layout_override
+    if hasattr(compiler_data, "show_gas_estimates"):
+        kwargs["show_gas_estimates"] = compiler_data.show_gas_estimates
+    if hasattr(compiler_data, "no_bytecode_metadata"):
+        kwargs["no_bytecode_metadata"] = compiler_data.no_bytecode_metadata
+
+    compiler_data_cls = type(compiler_data)
+    try:
+        augmented = compiler_data_cls(
+            file_input,
+            compiler_data.input_bundle,
+            compiler_data.settings,
+            **kwargs,
+        )
+    except TypeError:
+        augmented = compiler_data_cls(
+            file_input,
+            compiler_data.input_bundle,
+            compiler_data.settings,
+        )
+
+    with anchor_settings(augmented.settings):
+        bytecode = augmented.bytecode_runtime
+        _, source_map = compile_ir.assembly_to_evm(augmented.assembly_runtime)
+
+    return bytecode + contract.data_section, source_map
 
 
 # visit dst_ast with the constants of src_ast. because of the way we
@@ -62,6 +99,11 @@ def compile_vyper_function(vyper_function, contract):
         ast = ast.body[0]
         func_t = ast._metadata["func_type"]
 
+        if settings.experimental_codegen:
+            bytecode, source_map = _compile_with_augmented_source(vyper_function, contract)
+            typ = func_t.return_type
+            return ast, None, bytecode, source_map, typ
+
         contract.ensure_id(func_t)
         # use compiler's selector section which naturally handles edge
         # cases (such as methods with default parameters)
@@ -85,15 +127,8 @@ def compile_vyper_function(vyper_function, contract):
             )
 
         ir = IRnode.from_list(ir_list)
-        if settings.experimental_codegen:
-            venom_code = generate_venom(ir, settings)
-            assembly = generate_assembly_experimental(
-                venom_code, optimize=settings.optimize
-            )
-
-        else:
-            ir = optimizer.optimize(ir)
-            assembly = compile_ir.compile_to_assembly(ir)
+        ir = optimizer.optimize(ir)
+        assembly = compile_ir.compile_to_assembly(ir)
 
         bytecode, source_map = compile_ir.assembly_to_evm(assembly)
         bytecode += contract.data_section
