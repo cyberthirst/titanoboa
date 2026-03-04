@@ -368,7 +368,10 @@ class titanoboa_computation:
 
     def _get_call_trace(self, depth=0) -> TraceFrame:
         computation: ComputationAPI = self  # help mypy
-        address = computation.msg.code_address
+        if computation.msg.is_create:
+            address = computation.msg.storage_address
+        else:
+            address = computation.msg.code_address
         contract = computation.env._lookup_contract_fast(address)
         if contract is None:  # TODO: Retrieve from etherscan?
             source = None
@@ -560,6 +563,7 @@ class PyEVM:
         msg = FakeMessage(
             sender=sender.canonical_address,
             to=to.canonical_address,
+            code_address=to.canonical_address,
             gas=gas,
             value=value,
             code=bytecode,  # type: ignore

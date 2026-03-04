@@ -789,7 +789,7 @@ class VyperContract(_BaseVyperContract):
         if self._source_map is None:
             # cache- backwards compatibility (some caches might not have it
             # until next release)
-            self._source_map = self.compiler_data.source_map
+            self._source_map = self.compiler_data.source_map_runtime
 
         return self._source_map
 
