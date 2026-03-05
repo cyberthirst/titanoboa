@@ -761,7 +761,12 @@ class VyperContract(_BaseVyperContract):
 
         fn_t = fn._metadata["func_type"]
 
-        frame_info = fn_t._ir_info.frame_info
+        ir_info = getattr(fn_t, "_ir_info", None)
+        if ir_info is None:
+            return None
+        frame_info = ir_info.frame_info
+        if frame_info is None:
+            return None
 
         mem = computation._memory
         frame_detail = FrameDetail(fn.name)
